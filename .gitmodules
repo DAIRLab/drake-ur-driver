@@ -1,0 +1,3 @@
+[submodule "urclientlib"]
+	path = Universal_Robots_Client_Library
+	url = git@github.com:UniversalRobots/Universal_Robots_Client_Library.git

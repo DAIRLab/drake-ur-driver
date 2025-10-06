@@ -1,0 +1,17 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_binary(
+    name = "ur_driver",
+    srcs = [
+        "ur_driver.cc",
+    ],
+    deps = [
+        "@drake//common:common",
+        "@drake//lcmtypes:panda",
+        "@drake//multibody/plant",
+        "@drake//multibody/parsing:parsing",
+        "@gflags",
+        "@lcm",
+        "@liburclient",
+    ],
+)

@@ -1,0 +1,15 @@
+# -*- mode: python -*-
+# vi: set ft=python :
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "liburclient",
+    srcs = glob([
+        "src/**/*.cpp",
+        "include/ur_client_library/**/*.h",
+    ], allow_empty = True),
+    hdrs = glob(["include/ur_client_library/**/*.h"]),
+    includes = ["include"],
+    linkopts = ["-lpthread"]
+)
