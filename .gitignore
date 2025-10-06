@@ -1,0 +1,7 @@
+/bazel-bin
+/bazel-drake-ur-driver
+/bazel-out
+/bazel-testlogs
+MODULE.bazel.lock
+**/__pycache__/** 
+.vscode
