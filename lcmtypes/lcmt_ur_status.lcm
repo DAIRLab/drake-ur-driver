@@ -1,0 +1,52 @@
+package drake_ur_driver;
+
+// The current status of a UR arm.  All angular
+// positions/velocities are expressed in radians and radians/second.
+struct lcmt_ur_status
+{
+  // The timestamp in microseconds.
+  int64_t utime;
+  const int8_t DOF = 6;
+  const int8_t nTCP = 6;
+
+  // actual_q
+  double joint_position[DOF];
+  // target_q
+  double joint_position_desired[DOF];
+  // actual_qd
+  double joint_velocity[DOF];
+  // target_qd
+  double joint_velocity_desired[DOF];
+  // target_qdd
+  double joint_acceleration_desired[DOF];
+  // actual_current
+  double joint_current[DOF];
+  // target_current
+  double joint_current_desired[DOF];
+  // actual_TCP_pose
+  double tcp_pose[nTCP];
+  // actual_TCP_speed
+  double tcp_speed[nTCP];
+  // actual_TCP_force
+  double tcp_force[nTCP];
+  // target_TCP_pose
+  double tcp_pose_desired[nTCP];
+  // target_TCP_speed
+  double tcp_speed_desired[nTCP];
+
+  // enum for robot mode
+  // https://forum.universal-robots.com/t/realtime-client-robot-mode/1852/6
+  const int8_t kDisconnected = 0;
+  const int8_t kConfirmSafety = 1;
+  const int8_t kBooting = 2;
+  const int8_t kPowerOff = 3;
+  const int8_t kPowerOn = 4;
+  const int8_t kIdle = 5;
+  const int8_t kBackdrive = 6;
+  const int8_t kRunning = 7;
+  const int8_t kUpdatingFirmware = 8;
+  int32_t robot_mode;
+
+  // franka::RobotState.time.toMSec() * 1000
+  int64_t robot_utime;
+}

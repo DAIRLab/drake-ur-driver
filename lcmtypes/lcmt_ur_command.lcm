@@ -1,0 +1,28 @@
+package drake_ur_driver;
+
+// Commands the desired state of a URarm.
+struct lcmt_ur_command
+{
+  // The timestamp in microseconds.
+  int64_t utime;
+  const int8_t DOF = 6;
+
+  // The commanded joint positions in radians.
+  //
+  // These values must be provided if the CONTROL_MODE_POSITION bit is set
+  // within control_mode_expected.
+ 
+  double joint_position[DOF];
+
+  // The commanded joint velocities in radians per second.
+  //
+  // These values must be provided if the CONTROL_MODE_VELOCITY bit is set
+  // within control_mode_expected.
+  double joint_velocity[DOF];
+
+  const int8_t kStatusOnly = 0;
+  const int8_t kVelocity = 1;
+  const int8_t kPosition = 2;
+  // Describes how the controller expects the driver to be configured.
+  int8_t control_mode_expected;
+}

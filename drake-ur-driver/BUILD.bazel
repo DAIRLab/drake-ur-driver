@@ -6,12 +6,13 @@ cc_binary(
         "ur_driver.cc",
     ],
     deps = [
+        "//lcmtypes:lcmt_ur",
         "@drake//common:common",
-        "@drake//lcmtypes:panda",
         "@drake//multibody/plant",
         "@drake//multibody/parsing:parsing",
         "@gflags",
         "@lcm",
         "@liburclient",
     ],
+    data = glob(["resources/**"])
 )
