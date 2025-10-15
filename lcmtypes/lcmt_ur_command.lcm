@@ -6,6 +6,7 @@ struct lcmt_ur_command
   // The timestamp in microseconds.
   int64_t utime;
   const int8_t DOF = 6;
+  const int8_t nTCP = 6;
 
   // The commanded joint positions in radians.
   //
@@ -20,9 +21,25 @@ struct lcmt_ur_command
   // within control_mode_expected.
   double joint_velocity[DOF];
 
+  // The commanded TCP pose in meters and radians.
+  // These values must be provided if the CONTROL_MODE_TCP_POSE bit
+  // is set within control_mode_expected.
+  // The first three values are x, y, z in meters.
+  // The last three values are roll, pitch, yaw in radians.
+  double tcp_pose[nTCP];
+
+  // The commanded TCP velocity in meters per second and radians per second.
+  // These values must be provided if the CONTROL_MODE_TCP_VELOCITY bit
+  // is set within control_mode_expected.
+  // The first three values are x, y, z in meters per second.
+  // The last three values are roll, pitch, yaw in radians per second.
+  double tcp_velocity[nTCP];
+
   const int8_t kStatusOnly = 0;
   const int8_t kVelocity = 1;
   const int8_t kPosition = 2;
+  const int8_t kTCPPose = 3;
+  const int8_t kTCPVelocity = 4;
   // Describes how the controller expects the driver to be configured.
   int8_t control_mode_expected;
 }

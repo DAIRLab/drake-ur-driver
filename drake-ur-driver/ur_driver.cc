@@ -22,13 +22,15 @@ using drake::multibody::parsing::LoadModelDirectives;
 
 DEFINE_string(robot_ip_address, "192.168.56.101",
               "Address of the shop floor interface");
+DEFINE_string(local_ip_address, "", "Address of the local computer interface");
 DEFINE_string(lcm_url, "", "LCM URL for UR driver");
 DEFINE_string(lcm_command_channel, "UR_COMMAND",
               "Channel to listen for lcmt_ur_command messages on");
 DEFINE_string(lcm_status_channel, "UR_STATUS",
               "Channel to publish lcmt_ur_status messages on");
 DEFINE_string(control_mode, "position",
-              "Choose from: status_only, velocity, position (default)");
+              "Choose from: status_only, velocity, position (default), "
+              "tcp_position, tcp_velocity");
 DEFINE_bool(
     use_mbp, false,
     "Use Drake MbP for dynamics computation, rather than Franka's inbuilt "
@@ -36,9 +38,17 @@ DEFINE_bool(
 DEFINE_string(mbp_model_runpath,
               "drake_franka_driver/models/add_franka_control.yaml",
               "Model file to use.");
-DEFINE_int32(
-    joint_limit_factor, 100,
-    "Velocity joint limit factor k (k * <joint_velocity_limit> / 100.0).");
+DEFINE_int32(scale_velocity_limits, -1,
+             "Velocity joint limit factor k (k * <joint_velocity_limit> / "
+             "100.0). range [1-100]");
+DEFINE_int32(scale_joint_limits, -1,
+             "Joint limit factor k (k * <joint_limit> / 100.0). range [1-100]");
+DEFINE_int32(command_stop_limit, 5,
+             "Maximum number of messages before stopping commands.");
+DEFINE_double(
+    expire_sec, 0.1,
+    "How much delay is allowed for messages to be allowed. Converted to "
+    "usec, must be non-negative + finite.");
 
 constexpr int DOF = 6;
 inline const std::string SCRIPT_FILE =
@@ -61,6 +71,8 @@ enum class ControlMode {
   kVelocity,
   /** Command positions and velocities via Joint impedance */
   kPosition,
+  kTCPPose,
+  kTCPVelocity,
 };
 
 ControlMode ToControlMode(std::string value) {
@@ -70,6 +82,10 @@ ControlMode ToControlMode(std::string value) {
     return ControlMode::kVelocity;
   } else if (value == "position") {
     return ControlMode::kPosition;
+  } else if (value == "tcp_pose") {
+    return ControlMode::kTCPPose;
+  } else if (value == "tcp_velocity") {
+    return ControlMode::kTCPVelocity;
   } else {
     throw std::runtime_error("Invalid ControlMode: " + value);
   }
@@ -77,11 +93,12 @@ ControlMode ToControlMode(std::string value) {
 
 class URDriverRunner {
  public:
-  URDriverRunner(std::string ip_address, ControlMode control_mode,
-                 const std::string& lcm_url,
+  URDriverRunner(std::string robot_ip_address, std::string local_ip_address,
+                 ControlMode control_mode, const std::string& lcm_url,
                  const std::string& lcm_command_channel,
                  const std::string& lcm_status_channel,
                  std::unique_ptr<MultibodyPlant<double>> plant,
+                 uint32_t expire_usec,
                  const std::string& output_recipe_file = OUTPUT_RECIPE_FILE,
                  const std::string& input_recipe_file = INPUT_RECIPE_FILE,
                  const std::string& script_file = SCRIPT_FILE)
@@ -89,9 +106,11 @@ class URDriverRunner {
         lcm_(lcm_url),
         lcm_command_channel_(lcm_command_channel),
         lcm_status_channel_(lcm_status_channel),
-        plant_(std::move(plant)) {
+        plant_(std::move(plant)),
+        expire_usec_(expire_usec) {
     UrDriverConfiguration driver_config;
-    driver_config.robot_ip = ip_address;
+    driver_config.robot_ip = robot_ip_address;
+    driver_config.reverse_ip = local_ip_address;
     driver_config.script_file = script_file;
     driver_config.output_recipe_file = output_recipe_file;
     driver_config.input_recipe_file = input_recipe_file;
@@ -149,6 +168,15 @@ class URDriverRunner {
           static_cast<int8_t>(control_mode_), command->control_mode_expected);
       return;
     }
+
+    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    if (std::abs(now - command->utime) > expire_usec_) {
+      drake::log()->warn("packet too old [{} usec], skipping",
+                         now - command->utime);
+      return;
+    }
     command_ = *command;
   }
 
@@ -156,9 +184,32 @@ class URDriverRunner {
     while (!stop_command_thread_) {
       // Check if LCM message waiting
       if (lcm_.handleTimeout(1000 / 125) <= 0) {
-        // No previous command received, nothing to do
-        if (!prev_command_.has_value()) continue;
+        // If we haven't received any messages yet, keep waiting
+        if (!first_message_received_) continue;
+
+        no_message_count_++;
+
+        // If we haven't received a message in N consecutive cycles, stop
+        // sending commands
+        if (no_message_count_ >= FLAGS_command_stop_limit) {
+          // Stop sending commands after the limit is reached
+          if (no_message_count_ == FLAGS_command_stop_limit) {
+            if (prev_command_) prev_command_.reset();
+            drake::log()->warn(
+                "No command message received in the last {} cycles. Stopping "
+                "commands to robot.",
+                FLAGS_command_stop_limit);
+          }
+          ur_driver_->writeKeepalive(RobotReceiveTimeout::millisec(100));
+          continue;
+        }
+
+        // Else, repeat the previous command
         command_ = prev_command_;
+      } else {
+        // We received a message, reset the no message counter
+        if (!first_message_received_) first_message_received_ = true;
+        no_message_count_ = 0;
       }
 
       // Clear out any other pending messages
@@ -181,9 +232,23 @@ class URDriverRunner {
                                         RobotReceiveTimeout::millisec(100));
           break;
         }
+        case ControlMode::kTCPPose: {
+          ur_driver_->writeJointCommand(std::to_array(command_->tcp_pose),
+                                        comm::ControlMode::MODE_POSE,
+                                        RobotReceiveTimeout::millisec(100));
+          break;
+        }
+        case ControlMode::kTCPVelocity: {
+          ur_driver_->writeJointCommand(std::to_array(command_->tcp_velocity),
+                                        comm::ControlMode::MODE_SPEEDL,
+                                        RobotReceiveTimeout::millisec(100));
+          break;
+        }
         default:
-          drake::log()->error("Invalid ControlMode");
-          return;
+          drake::log()->error(
+              "Invalid ControlMode detected, Stopping command thread.");
+          stop_command_thread_ = true;
+          break;
       }
       prev_command_ = command_;
       command_.reset();
@@ -240,31 +305,64 @@ class URDriverRunner {
       // Publish status message
       lcm_.publish(lcm_status_channel_, &status_msg);
 
-      if (plant_) {
-        double factor =
-            (std::min(std::max(FLAGS_joint_limit_factor, 1), 100) / 100.0);
-        auto upper_limit = plant_->GetVelocityUpperLimits();
-        auto lower_limit = plant_->GetVelocityLowerLimits();
-        bool exceeds_limit = false;
-        for (int i = 0; i < DOF; ++i) {
-          if (std::abs(status_msg.joint_velocity[i]) > factor * upper_limit[i] ||
-              std::abs(status_msg.joint_velocity[i]) < factor * lower_limit[i]) {
-            drake::log()->error(
-                "Joint {} velocity {} exceeds limit of [{}, {}] (factor {})", i,
-                status_msg.joint_velocity[i], factor * upper_limit[i], factor * lower_limit[i],
-                FLAGS_joint_limit_factor);
-            exceeds_limit = true;
-          }
-        }
-        if (exceeds_limit) {
-          drake::log()->error(
-              "Joint velocity limits exceeded, Exiting status thread.");
-          stop_status_thread_ = true;
-          break;
-        }
+      if (IsLimitsExceeded(status_msg)) {
+        drake::log()->error(
+            "Joint/Workspace limits exceeded, Exiting status thread.");
+        stop_status_thread_ = true;
+        break;
       }
     }
     handlers_cv_.notify_one();
+  }
+
+  bool IsLimitsExceeded(drake_ur_driver::lcmt_ur_status& status) {
+    // If no plant is provided, skip the checks
+    if (!plant_) return false;
+
+    bool limits_exceeded = false;
+
+    if (FLAGS_scale_velocity_limits > 0) {
+      // check velocity limits
+      double velocity_scale_factor =
+          (std::min(std::max(FLAGS_scale_velocity_limits, 1), 100) / 100.0);
+      drake::VectorX<double> upper_velocity_limit =
+          plant_->GetVelocityUpperLimits() * velocity_scale_factor;
+      drake::VectorX<double> lower_velocity_limit =
+          plant_->GetVelocityLowerLimits() * velocity_scale_factor;
+
+      for (int i = 0; i < DOF; ++i) {
+        if (status.joint_velocity[i] > upper_velocity_limit[i] ||
+            status.joint_velocity[i] < lower_velocity_limit[i]) {
+          drake::log()->error(
+              "Joint {} velocity {} exceeds limit of [{}, {}] (factor {})", i,
+              status.joint_velocity[i], upper_velocity_limit[i],
+              lower_velocity_limit[i], FLAGS_scale_velocity_limits);
+          limits_exceeded = true;
+        }
+      }
+    }
+
+    if (FLAGS_scale_joint_limits > 0) {
+      // check position limits
+      double joint_scale_factor =
+          (std::min(std::max(FLAGS_scale_joint_limits, 1), 100) / 100.0);
+      drake::VectorX<double> upper_joint_limit =
+          plant_->GetPositionUpperLimits() * joint_scale_factor;
+      drake::VectorX<double> lower_joint_limit =
+          plant_->GetPositionLowerLimits() * joint_scale_factor;
+
+      for (int i = 0; i < DOF; ++i) {
+        if (status.joint_position[i] > upper_joint_limit[i] ||
+            status.joint_position[i] < lower_joint_limit[i]) {
+          drake::log()->error(
+              "Joint {} position {} exceeds limit of [{}, {}] (factor {})", i,
+              status.joint_position[i], upper_joint_limit[i],
+              lower_joint_limit[i], FLAGS_scale_joint_limits);
+          limits_exceeded = true;
+        }
+      }
+    }
+    return limits_exceeded;
   }
 
   ControlMode control_mode_{ControlMode::kStatusOnly};
@@ -284,7 +382,11 @@ class URDriverRunner {
   std::mutex handlers_mutex_;
   std::condition_variable handlers_cv_;
 
+  int no_message_count_{0};
+  bool first_message_received_{false};
+
   std::unique_ptr<MultibodyPlant<double>> plant_;
+  const uint32_t expire_usec_{};
 };
 
 // N.B. Using a resource path allows us to locate
@@ -315,12 +417,17 @@ int DoMain() {
   DRAKE_THROW_UNLESS(FLAGS_robot_ip_address != "");
   DRAKE_THROW_UNLESS(FLAGS_lcm_command_channel != "");
   DRAKE_THROW_UNLESS(FLAGS_lcm_status_channel != "");
+  DRAKE_THROW_UNLESS(FLAGS_expire_sec >= 0.0 &&
+                     std::isfinite(FLAGS_expire_sec));
+
+  const uint32_t expire_usec = static_cast<uint32_t>(FLAGS_expire_sec * 1e6);
 
   const ControlMode mode = ToControlMode(FLAGS_control_mode);
 
-  URDriverRunner runner(FLAGS_robot_ip_address, mode, FLAGS_lcm_url,
-                        FLAGS_lcm_command_channel, FLAGS_lcm_status_channel,
-                        MaybeLoadPlant());
+  URDriverRunner runner(FLAGS_robot_ip_address, FLAGS_local_ip_address, mode,
+                        FLAGS_lcm_url, FLAGS_lcm_command_channel,
+                        FLAGS_lcm_status_channel, MaybeLoadPlant(),
+                        expire_usec);
   runner.run();
   return 0;
 }

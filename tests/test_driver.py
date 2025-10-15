@@ -33,8 +33,8 @@ class TrajectoryToUrCommand(LeafSystem):
         trajectory = self.get_input_port().Eval(context)
         command = lcmt_ur_command()
         command.utime = int(time.time() * 1e6)
-        command.joint_position = trajectory
-        command.control_mode_expected = lcmt_ur_command.kPosition
+        command.joint_velocity = trajectory
+        command.control_mode_expected = lcmt_ur_command.kVelocity
         output.set_value(command)
 
 ur_status = None
@@ -47,25 +47,20 @@ sub = lc.subscribe("UR_STATUS", my_handler)
 lc.handle()
 
 # Define the times and control points for the trajectory.
-times = [0.0, 15.0, 30.0, 45.0]
+times = [0.0, 15.0, 30.0]
 # The values at each time point.
 # Each column represents a different time. Each row is a different joint.
-control_points = np.array(
-    [
-        [np.pi / 2, -np.pi / 2, np.pi / 2],  # Joint 1 angle
-        [np.pi / 2, -np.pi / 2, np.pi / 2],  # Joint 2 angle
-        [2 * np.pi / 3, -2 * np.pi / 3, 2 * np.pi / 3],  # Joint 3 angle
-        [np.pi / 4, -np.pi / 4, np.pi / 4],  # Joint 4 angle
-        [np.pi / 2, 0, np.pi / 2],  # Joint 5 angle
-        [0.0, -np.pi / 4, 0.0],  # Joint 6 angle
-    ]
-)
-control_points = np.hstack((np.array(ur_status.joint_position).reshape((6, 1)), control_points))
+offset = np.pi/12
+J0 = np.array(ur_status.tcp_pose).reshape((6, 1))
+J1 = J0 + np.array([[0.05], [0], [0], [0], [0], [0]])
+# J2 = J1 + np.array([[-offset], [0], [0], [0], [0], [0]])
+# J3 = J0
+control_points = np.hstack((J0, J1, J0))
 
 # Create the trajectory object.
 trajectory = PiecewisePolynomial.CubicWithContinuousSecondDerivatives(
     times, control_points
-)
+).derivative()
 
 # Create a source that outputs the trajectory.
 builder = DiagramBuilder()
@@ -99,4 +94,4 @@ diagram_context = diagram.CreateDefaultContext()
 simulator = Simulator(diagram, diagram_context)
 simulator.set_target_realtime_rate(1.0)
 simulator.Initialize()
-simulator.AdvanceTo(45.0)
+simulator.AdvanceTo(30.0)
