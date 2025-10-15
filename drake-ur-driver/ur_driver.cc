@@ -22,7 +22,6 @@ using drake::multibody::parsing::LoadModelDirectives;
 
 DEFINE_string(robot_ip_address, "192.168.56.101",
               "Address of the shop floor interface");
-DEFINE_string(local_ip_address, "", "Address of the local computer interface");
 DEFINE_string(lcm_url, "", "LCM URL for UR driver");
 DEFINE_string(lcm_command_channel, "UR_COMMAND",
               "Channel to listen for lcmt_ur_command messages on");
@@ -33,10 +32,9 @@ DEFINE_string(control_mode, "position",
               "tcp_position, tcp_velocity");
 DEFINE_bool(
     use_mbp, false,
-    "Use Drake MbP for dynamics computation, rather than Franka's inbuilt "
-    "model.");
-DEFINE_string(mbp_model_runpath,
-              "drake_franka_driver/models/add_franka_control.yaml",
+    "Use Drake MbP for dynamics computation for adding limit checks. If true, "
+    "use urdf_path to provide the model. If false, skip limit checks.");
+DEFINE_string(urdf_path, "drake-ur-driver/resources/ur10.urdf",
               "Model file to use.");
 DEFINE_int32(scale_velocity_limits, -1,
              "Velocity joint limit factor k (k * <joint_velocity_limit> / "
@@ -93,8 +91,8 @@ ControlMode ToControlMode(std::string value) {
 
 class URDriverRunner {
  public:
-  URDriverRunner(std::string robot_ip_address, std::string local_ip_address,
-                 ControlMode control_mode, const std::string& lcm_url,
+  URDriverRunner(std::string robot_ip_address, ControlMode control_mode,
+                 const std::string& lcm_url,
                  const std::string& lcm_command_channel,
                  const std::string& lcm_status_channel,
                  std::unique_ptr<MultibodyPlant<double>> plant,
@@ -110,7 +108,6 @@ class URDriverRunner {
         expire_usec_(expire_usec) {
     UrDriverConfiguration driver_config;
     driver_config.robot_ip = robot_ip_address;
-    driver_config.reverse_ip = local_ip_address;
     driver_config.script_file = script_file;
     driver_config.output_recipe_file = output_recipe_file;
     driver_config.input_recipe_file = input_recipe_file;
@@ -216,6 +213,7 @@ class URDriverRunner {
       while (lcm_.handleTimeout(0) > 0) {
       }
 
+      // Handle the command
       switch (control_mode_) {
         case ControlMode::kStatusOnly:
           // do nothing
@@ -257,14 +255,18 @@ class URDriverRunner {
   }
 
   void handleStatusMessage() {
+    // Start RTDE communication
     ur_driver_->startRTDECommunication();
     while (!stop_status_thread_) {
+      // Wait for next package @ 125Hz
       std::unique_ptr<rtde_interface::DataPackage> data_pkg =
           ur_driver_->getDataPackage();
       if (!data_pkg) {
         drake::log()->warn("Error getting data package from robot");
         continue;
       }
+
+      // Parse data package
       drake_ur_driver::lcmt_ur_status status_msg;
       status_msg.utime =
           std::chrono::duration_cast<std::chrono::microseconds>(
@@ -305,6 +307,7 @@ class URDriverRunner {
       // Publish status message
       lcm_.publish(lcm_status_channel_, &status_msg);
 
+      // Check for limits violations
       if (IsLimitsExceeded(status_msg)) {
         drake::log()->error(
             "Joint/Workspace limits exceeded, Exiting status thread.");
@@ -312,6 +315,7 @@ class URDriverRunner {
         break;
       }
     }
+    // Notify the command thread to stop as well
     handlers_cv_.notify_one();
   }
 
@@ -403,8 +407,8 @@ std::unique_ptr<MultibodyPlant<double>> MaybeLoadPlant() {
   if (!FLAGS_use_mbp) {
     return nullptr;
   }
-  const std::string model_file = FLAGS_mbp_model_runpath;
-  //   GetPathOrThrow(drake::FindRunfile(FLAGS_mbp_model_runpath));
+  const std::string model_file = FLAGS_urdf_path;
+  //   GetPathOrThrow(drake::FindRunfile(FLAGS_urdf_path));
   const double time_step = 0.0;
   auto plant = std::make_unique<MultibodyPlant<double>>(time_step);
   drake::multibody::Parser parser(plant.get());
@@ -424,10 +428,9 @@ int DoMain() {
 
   const ControlMode mode = ToControlMode(FLAGS_control_mode);
 
-  URDriverRunner runner(FLAGS_robot_ip_address, FLAGS_local_ip_address, mode,
-                        FLAGS_lcm_url, FLAGS_lcm_command_channel,
-                        FLAGS_lcm_status_channel, MaybeLoadPlant(),
-                        expire_usec);
+  URDriverRunner runner(FLAGS_robot_ip_address, mode, FLAGS_lcm_url,
+                        FLAGS_lcm_command_channel, FLAGS_lcm_status_channel,
+                        MaybeLoadPlant(), expire_usec);
   runner.run();
   return 0;
 }
