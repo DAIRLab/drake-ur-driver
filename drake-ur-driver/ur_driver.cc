@@ -29,7 +29,7 @@ DEFINE_string(lcm_status_channel, "UR_STATUS",
               "Channel to publish lcmt_ur_status messages on");
 DEFINE_string(control_mode, "position",
               "Choose from: status_only, velocity, position (default), "
-              "tcp_position, tcp_velocity");
+              "tcp_pose, tcp_velocity");
 DEFINE_bool(
     use_mbp, false,
     "Use Drake MbP for dynamics computation for adding limit checks. If true, "
@@ -179,9 +179,9 @@ class URDriverRunner {
 
   void handleCommandMessage() {
     while (!stop_command_thread_) {
-      // Check if LCM message waiting
-      if (lcm_.handleTimeout(1000 / 125) <= 0) {
-        // If we haven't received any messages yet, keep waiting
+      // Check if LCM message waiting 
+      if (lcm_.handleTimeout(1000 / 125) <= 0 || !command_.has_value()) {
+        // If we haven't received any valid messages yet, keep waiting
         if (!first_message_received_) continue;
 
         no_message_count_++;
@@ -203,7 +203,8 @@ class URDriverRunner {
 
         // Else, repeat the previous command
         command_ = prev_command_;
-      } else {
+      } 
+      else {
         // We received a message, reset the no message counter
         if (!first_message_received_) first_message_received_ = true;
         no_message_count_ = 0;

@@ -33,8 +33,8 @@ class TrajectoryToUrCommand(LeafSystem):
         trajectory = self.get_input_port().Eval(context)
         command = lcmt_ur_command()
         command.utime = int(time.time() * 1e6)
-        command.joint_velocity = trajectory
-        command.control_mode_expected = lcmt_ur_command.kVelocity
+        command.tcp_velocity = trajectory
+        command.control_mode_expected = lcmt_ur_command.kTCPVelocity
         output.set_value(command)
 
 ur_status = None
@@ -50,9 +50,11 @@ lc.handle()
 times = [0.0, 15.0, 30.0]
 # The values at each time point.
 # Each column represents a different time. Each row is a different joint.
-offset = np.pi/12
+offset = np.pi/8
 J0 = np.array(ur_status.tcp_pose).reshape((6, 1))
-J1 = J0 + np.array([[0.05], [0], [0], [0], [0], [0]])
+print(ur_status.tcp_pose)
+J1 = J0 + np.array([[0], [0], [0.05], [0], [0], [0]])
+print(J1.transpose())
 # J2 = J1 + np.array([[-offset], [0], [0], [0], [0], [0]])
 # J3 = J0
 control_points = np.hstack((J0, J1, J0))
@@ -60,7 +62,7 @@ control_points = np.hstack((J0, J1, J0))
 # Create the trajectory object.
 trajectory = PiecewisePolynomial.CubicWithContinuousSecondDerivatives(
     times, control_points
-).derivative()
+).derivative(1)  # Take the derivative to get velocity.
 
 # Create a source that outputs the trajectory.
 builder = DiagramBuilder()
