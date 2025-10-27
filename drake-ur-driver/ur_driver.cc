@@ -1,6 +1,7 @@
 #include <pthread.h>
 
 #include <algorithm>
+#include <array>
 
 #include <gflags/gflags.h>
 #include <lcm/lcm-cpp.hpp>
@@ -41,6 +42,18 @@ DEFINE_int32(scale_velocity_limits, -1,
              "100.0). range [1-100]");
 DEFINE_int32(scale_joint_limits, -1,
              "Joint limit factor k (k * <joint_limit> / 100.0). range [1-100]");
+DEFINE_double(maximum_joint_position_distance, -1.0,
+              "Maximum joint position distance in rad from previous "
+              "commanded position. Negative value disables the limit.");
+DEFINE_double(maximum_tcp_linear_velocity, -1.0,
+              "Maximum TCP linear velocity in m/s in x, y and z direction. "
+              "Negative value disables the limit.");
+DEFINE_double(maximum_tcp_angular_velocity, -1.0,
+              "Maximum TCP angular velocity in rad/s in roll, pitch and yaw "
+              "direction. Negative value disables the limit.");
+DEFINE_double(maximum_tcp_linear_distance, -1.0,
+              "Maximum TCP linear distance in m from previous commanded "
+              "position. Negative value disables the limit.");
 DEFINE_int32(command_stop_limit, 5,
              "Maximum number of messages before stopping commands.");
 DEFINE_double(
@@ -69,7 +82,9 @@ enum class ControlMode {
   kVelocity,
   /** Command positions and velocities via Joint impedance */
   kPosition,
+  /** Command TCP pose via Cartesian impedance */
   kTCPPose,
+  /** Command TCP velocity via Cartesian impedance */
   kTCPVelocity,
 };
 
@@ -87,6 +102,29 @@ ControlMode ToControlMode(std::string value) {
   } else {
     throw std::runtime_error("Invalid ControlMode: " + value);
   }
+}
+
+enum class LimitType : std::uint8_t {
+  POSITION = 1 << 1,
+  VELOCITY = 1 << 2,
+  TCP_VELOCITY = 1 << 3,
+  JOINT_POSITION_DISTANCE = 1 << 4,
+  CARTESIAN_LINEAR_DISTANCE = 1 << 5,
+};
+
+// Add operator overloads for easier usage
+inline LimitType operator|(LimitType a, LimitType b) {
+  return static_cast<LimitType>(static_cast<uint8_t>(a) |
+                                static_cast<uint8_t>(b));
+}
+
+inline LimitType operator&(LimitType a, LimitType b) {
+  return static_cast<LimitType>(static_cast<uint8_t>(a) &
+                                static_cast<uint8_t>(b));
+}
+
+inline bool HasFlag(LimitType flags, LimitType flag) {
+  return (flags & flag) != static_cast<LimitType>(0);
 }
 
 class URDriverRunner {
@@ -179,7 +217,7 @@ class URDriverRunner {
 
   void handleCommandMessage() {
     while (!stop_command_thread_) {
-      // Check if LCM message waiting 
+      // Check if LCM message waiting
       if (lcm_.handleTimeout(1000 / 125) <= 0 || !command_.has_value()) {
         // If we haven't received any valid messages yet, keep waiting
         if (!first_message_received_) continue;
@@ -203,8 +241,7 @@ class URDriverRunner {
 
         // Else, repeat the previous command
         command_ = prev_command_;
-      } 
-      else {
+      } else {
         // We received a message, reset the no message counter
         if (!first_message_received_) first_message_received_ = true;
         no_message_count_ = 0;
@@ -214,30 +251,72 @@ class URDriverRunner {
       while (lcm_.handleTimeout(0) > 0) {
       }
 
+      std::optional<drake_ur_driver::lcmt_ur_status> status;
+      {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        status = status_;
+      }
+
       // Handle the command
       switch (control_mode_) {
         case ControlMode::kStatusOnly:
           // do nothing
           break;
         case ControlMode::kVelocity: {
+          if (status.has_value() &&
+              AreLimitsExceeded(LimitType::VELOCITY, status.value(),
+                                std::to_array(command_->joint_velocity))) {
+            drake::log()->error(
+                "Joint velocity limits exceeded, Stopping command thread.");
+            stop_command_thread_ = true;
+            break;
+          }
           ur_driver_->writeJointCommand(std::to_array(command_->joint_velocity),
                                         comm::ControlMode::MODE_SPEEDJ,
                                         RobotReceiveTimeout::millisec(100));
           break;
         }
         case ControlMode::kPosition: {
+          if (status.has_value() &&
+              AreLimitsExceeded(
+                  LimitType::POSITION | LimitType::JOINT_POSITION_DISTANCE,
+                  status.value(), std::to_array(command_->joint_position))) {
+            drake::log()->error(
+                "Joint position limits exceeded, Stopping command "
+                "thread.");
+            stop_command_thread_ = true;
+            break;
+          }
           ur_driver_->writeJointCommand(std::to_array(command_->joint_position),
                                         comm::ControlMode::MODE_SERVOJ,
                                         RobotReceiveTimeout::millisec(100));
           break;
         }
         case ControlMode::kTCPPose: {
+          if (status.has_value() &&
+              AreLimitsExceeded(LimitType::CARTESIAN_LINEAR_DISTANCE,
+                                status.value(),
+                                std::to_array(command_->tcp_pose))) {
+            drake::log()->error(
+                "TCP velocity/distance limits exceeded, Stopping command "
+                "thread.");
+            stop_command_thread_ = true;
+            break;
+          }
           ur_driver_->writeJointCommand(std::to_array(command_->tcp_pose),
                                         comm::ControlMode::MODE_POSE,
                                         RobotReceiveTimeout::millisec(100));
           break;
         }
         case ControlMode::kTCPVelocity: {
+          if (status.has_value() &&
+              AreLimitsExceeded(LimitType::TCP_VELOCITY, status.value(),
+                                std::to_array(command_->tcp_velocity))) {
+            drake::log()->error(
+                "TCP velocity limits exceeded, Stopping command thread.");
+            stop_command_thread_ = true;
+            break;
+          }
           ur_driver_->writeJointCommand(std::to_array(command_->tcp_velocity),
                                         comm::ControlMode::MODE_SPEEDL,
                                         RobotReceiveTimeout::millisec(100));
@@ -309,60 +388,197 @@ class URDriverRunner {
       lcm_.publish(lcm_status_channel_, &status_msg);
 
       // Check for limits violations
-      if (IsLimitsExceeded(status_msg)) {
+      if (AreLimitsExceeded(LimitType::POSITION | LimitType::VELOCITY |
+                                LimitType::TCP_VELOCITY,
+                            status_msg)) {
         drake::log()->error(
             "Joint/Workspace limits exceeded, Exiting status thread.");
         stop_status_thread_ = true;
         break;
+      }
+      {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        status_ = status_msg;
       }
     }
     // Notify the command thread to stop as well
     handlers_cv_.notify_one();
   }
 
-  bool IsLimitsExceeded(drake_ur_driver::lcmt_ur_status& status) {
-    // If no plant is provided, skip the checks
-    if (!plant_) return false;
-
+  bool AreLimitsExceeded(
+      LimitType flags, drake_ur_driver::lcmt_ur_status& status_msg,
+      std::optional<std::array<double, 6>> command = std::nullopt) {
     bool limits_exceeded = false;
+    double dt = 0.008;  // assuming 125Hz update rate
+    // Perform distance checks if enabled
+    if (HasFlag(flags, LimitType::JOINT_POSITION_DISTANCE)) {
+      if (!command.has_value()) {
+        drake::log()->error(
+            "No command provided for joint position distance check.");
+        return true;
+      }
+      auto tcp_command = command.value();
+      // Check if either maximum joint position distance or velocity scaling is
+      // enabled and plant is provided
+      if (FLAGS_maximum_joint_position_distance > 0 ||
+          (plant_ && FLAGS_scale_velocity_limits > 0)) {
+        // Set default value for max joint distance (may be -1)
+        drake::VectorX<double> max_joint_distance(DOF);
 
-    if (FLAGS_scale_velocity_limits > 0) {
-      // check velocity limits
+        if (plant_) {
+          // Scale distance check based on velocity limits
+          double velocity_scale_factor =
+              std::min(std::max(FLAGS_scale_velocity_limits, 1), 100) / 100.0;
+          drake::VectorX<double> velocity_limits =
+              plant_->GetVelocityUpperLimits();
+          // Assumes symmetric velocity limits
+          for (int i = 0; i < DOF; ++i) {
+            max_joint_distance[i] =
+                (velocity_limits[i] * velocity_scale_factor) * dt;
+          }
+        } else {
+          // Use fixed maximum joint position distance
+          for (int i = 0; i < DOF; ++i) {
+            max_joint_distance[i] = FLAGS_maximum_joint_position_distance;
+          }
+        }
+        // Distance check enabled
+        for (int i = 0; i < DOF; ++i) {
+          if (std::abs(status_msg.joint_position[i] - tcp_command[i]) >
+              max_joint_distance[i]) {
+            drake::log()->error(
+                "Joint {} position distance {} exceeds limit of {} rad", i,
+                std::abs(status_msg.joint_position[i] - tcp_command[i]),
+                max_joint_distance[i]);
+            limits_exceeded = true;
+          }
+        }
+      }
+    }
+
+    if (HasFlag(flags, LimitType::CARTESIAN_LINEAR_DISTANCE)) {
+      if (FLAGS_maximum_tcp_linear_distance > 0 ||
+          FLAGS_maximum_tcp_linear_velocity > 0) {
+        if (!command.has_value()) {
+          drake::log()->error(
+              "No command provided for TCP linear distance check.");
+          return true;
+        }
+        auto tcp_command = command.value();
+
+        double max_distance = FLAGS_maximum_tcp_linear_distance;
+
+        // Use velocity limit to compute max distance if enabled
+        if (FLAGS_maximum_tcp_linear_velocity > 0) {
+          max_distance = FLAGS_maximum_tcp_linear_velocity * dt;
+        }
+
+        double dx = status_msg.tcp_pose[0] - tcp_command[0];
+        double dy = status_msg.tcp_pose[1] - tcp_command[1];
+        double dz = status_msg.tcp_pose[2] - tcp_command[2];
+        double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance > max_distance) {
+          drake::log()->error("TCP linear distance {} exceeds limit of {} m",
+                              distance, max_distance);
+          limits_exceeded = true;
+        }
+      }
+    }
+
+    if (HasFlag(flags, LimitType::TCP_VELOCITY)) {
+      // Use provided command or current velocity if command is empty
+
+      std::array<double, 6> tcp_velocity = std::to_array(status_msg.tcp_speed);
+      if (command.has_value()) {
+        tcp_velocity = command.value();
+      }
+
+      // Check linear velocity limits
+      if (FLAGS_maximum_tcp_linear_velocity > 0) {
+        for (int i = 0; i < 3; ++i) {
+          // Assume first 3 elements are linear velocities and symmetric
+          if (std::abs(tcp_velocity[i]) > FLAGS_maximum_tcp_linear_velocity) {
+            drake::log()->error(
+                "TCP linear velocity {} exceeds limit of {} m/s", i,
+                std::abs(tcp_velocity[i]), FLAGS_maximum_tcp_linear_velocity);
+            limits_exceeded = true;
+          }
+        }
+      }
+
+      // Check angular velocity limits
+      if (FLAGS_maximum_tcp_angular_velocity > 0) {
+        for (int i = 3; i < 6; ++i) {
+          // Assume last 3 elements are angular velocities and symmetric
+          if (std::abs(tcp_velocity[i]) > FLAGS_maximum_tcp_angular_velocity) {
+            drake::log()->error(
+                "TCP angular velocity {} exceeds limit of {} rad/s", i,
+                std::abs(tcp_velocity[i]), FLAGS_maximum_tcp_angular_velocity);
+            limits_exceeded = true;
+          }
+        }
+      }
+    }
+
+    // If no plant is provided, skip the checks
+    if (!plant_) return limits_exceeded;
+
+    if (HasFlag(flags, LimitType::VELOCITY)) {
+      // Use provided command or current velocity if command is empty
+      std::array<double, DOF> joint_velocity =
+          std::to_array(status_msg.joint_velocity);
+      if (command.has_value()) {
+        joint_velocity = command.value();
+      }
+      // Find scaled velocity limits
       double velocity_scale_factor =
-          (std::min(std::max(FLAGS_scale_velocity_limits, 1), 100) / 100.0);
+          FLAGS_scale_velocity_limits > 0
+              ? (std::min(std::max(FLAGS_scale_velocity_limits, 1), 100) /
+                 100.0)
+              : 1.0;
+
       drake::VectorX<double> upper_velocity_limit =
           plant_->GetVelocityUpperLimits() * velocity_scale_factor;
       drake::VectorX<double> lower_velocity_limit =
           plant_->GetVelocityLowerLimits() * velocity_scale_factor;
 
       for (int i = 0; i < DOF; ++i) {
-        if (status.joint_velocity[i] > upper_velocity_limit[i] ||
-            status.joint_velocity[i] < lower_velocity_limit[i]) {
+        if (joint_velocity[i] > upper_velocity_limit[i] ||
+            joint_velocity[i] < lower_velocity_limit[i]) {
           drake::log()->error(
               "Joint {} velocity {} exceeds limit of [{}, {}] (factor {})", i,
-              status.joint_velocity[i], upper_velocity_limit[i],
+              joint_velocity[i], upper_velocity_limit[i],
               lower_velocity_limit[i], FLAGS_scale_velocity_limits);
           limits_exceeded = true;
         }
       }
     }
 
-    if (FLAGS_scale_joint_limits > 0) {
-      // check position limits
+    if (HasFlag(flags, LimitType::POSITION)) {
+      // Use provided command or current position if command is empty
+      std::array<double, DOF> joint_position =
+          std::to_array(status_msg.joint_position);
+      if (command.has_value()) {
+        joint_position = command.value();
+      }
+      // Find scaled position limits
       double joint_scale_factor =
-          (std::min(std::max(FLAGS_scale_joint_limits, 1), 100) / 100.0);
+          FLAGS_scale_joint_limits > 0
+              ? (std::min(std::max(FLAGS_scale_joint_limits, 1), 100) / 100.0)
+              : 1.0;
+
       drake::VectorX<double> upper_joint_limit =
           plant_->GetPositionUpperLimits() * joint_scale_factor;
       drake::VectorX<double> lower_joint_limit =
           plant_->GetPositionLowerLimits() * joint_scale_factor;
 
       for (int i = 0; i < DOF; ++i) {
-        if (status.joint_position[i] > upper_joint_limit[i] ||
-            status.joint_position[i] < lower_joint_limit[i]) {
+        if (joint_position[i] > upper_joint_limit[i] ||
+            joint_position[i] < lower_joint_limit[i]) {
           drake::log()->error(
               "Joint {} position {} exceeds limit of [{}, {}] (factor {})", i,
-              status.joint_position[i], upper_joint_limit[i],
-              lower_joint_limit[i], FLAGS_scale_joint_limits);
+              joint_position[i], upper_joint_limit[i], lower_joint_limit[i],
+              FLAGS_scale_joint_limits);
           limits_exceeded = true;
         }
       }
@@ -377,6 +593,7 @@ class URDriverRunner {
   const std::string lcm_status_channel_;
   std::optional<drake_ur_driver::lcmt_ur_command> command_;
   std::optional<drake_ur_driver::lcmt_ur_command> prev_command_;
+  std::optional<drake_ur_driver::lcmt_ur_status> status_;
 
   std::unique_ptr<UrDriver> ur_driver_;
 
@@ -386,6 +603,7 @@ class URDriverRunner {
   std::atomic<bool> stop_command_thread_{false};
   std::mutex handlers_mutex_;
   std::condition_variable handlers_cv_;
+  std::mutex status_mutex_;
 
   int no_message_count_{0};
   bool first_message_received_{false};
