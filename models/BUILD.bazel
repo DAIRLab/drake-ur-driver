@@ -1,0 +1,13 @@
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "ur_models",
+    srcs = glob([
+        "**/*.urdf", 
+        "**/*.sdf", 
+        "**/*.obj", 
+        "**/*.glb",
+        "**/*.gltf",
+        "**/*.bin",
+    ], allow_empty = True),
+)

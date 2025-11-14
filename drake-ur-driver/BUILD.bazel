@@ -14,5 +14,7 @@ cc_binary(
         "@lcm",
         "@liburclient",
     ],
-    data = glob(["resources/**"])
+    data = [
+        "//models:ur_models",
+    ],
 )
