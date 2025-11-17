@@ -24,9 +24,9 @@ using drake::multibody::parsing::LoadModelDirectives;
 DEFINE_string(robot_ip_address, "192.168.56.101",
               "Address of the shop floor interface");
 DEFINE_string(lcm_url, "", "LCM URL for UR driver");
-DEFINE_string(lcm_command_channel, "UR_COMMAND",
+DEFINE_string(lcm_command_channel, "UR_ROBOT_COMMAND",
               "Channel to listen for lcmt_ur_command messages on");
-DEFINE_string(lcm_status_channel, "UR_STATUS",
+DEFINE_string(lcm_status_channel, "UR_ROBOT_STATUS",
               "Channel to publish lcmt_ur_status messages on");
 DEFINE_string(control_mode, "position",
               "Choose from: status_only, velocity, position (default), "
@@ -35,7 +35,7 @@ DEFINE_bool(
     use_mbp, false,
     "Use Drake MbP for dynamics computation for adding limit checks. If true, "
     "use urdf_path to provide the model. If false, skip limit checks.");
-DEFINE_string(urdf_path, "drake-ur-driver/resources/ur10.urdf",
+DEFINE_string(urdf_path, "models/ur10.urdf",
               "Model file to use.");
 DEFINE_int32(scale_velocity_limits, -1,
              "Velocity joint limit factor k (k * <joint_velocity_limit> / "
