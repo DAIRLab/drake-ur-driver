@@ -11,5 +11,6 @@ cc_library(
     ], allow_empty = True),
     hdrs = glob(["include/ur_client_library/**/*.h"]),
     includes = ["include"],
+    data = glob(["resources/**"]),
     linkopts = ["-lpthread"]
 )

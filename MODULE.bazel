@@ -49,12 +49,8 @@ archive_override(
     strip_prefix = "drake-{}".format(DRAKE_COMMIT.lstrip("v")),
 )
 
-new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
-new_local_repository(
-    name = "liburclient",
-    build_file = "//tools/workspace/Universal_Robots_Client_Library:package.BUILD.bazel",
-    path = "Universal_Robots_Client_Library",
-)
+liburclient_repository = use_extension("//tools/workspace/Universal_Robots_Client_Library:repository.bzl", "liburclient_repository")
+use_repo(liburclient_repository, "liburclient")
 
 # Use the host system /usr/bin/python3.
 python_repository = use_repo_rule(

@@ -1,0 +1,9 @@
+package(default_visibility = ["//visibility:public"])
+
+py_binary(
+    name = "test_driver",
+    srcs = ["test_driver.py"],
+    deps = [
+        "//lcmtypes:lcmtypes_ur_py",
+    ],
+)

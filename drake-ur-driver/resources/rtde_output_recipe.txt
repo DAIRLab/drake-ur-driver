@@ -1,0 +1,14 @@
+timestamp
+actual_q
+target_q
+actual_qd
+target_qd
+target_qdd
+actual_current
+target_current
+actual_TCP_pose
+target_TCP_pose
+actual_TCP_speed
+target_TCP_speed
+actual_TCP_force
+robot_mode
