@@ -8,9 +8,15 @@ cc_library(
     srcs = glob([
         "src/**/*.cpp",
         "include/ur_client_library/**/*.h",
-    ], allow_empty = True),
+    ], allow_empty = True) + select({
+        "@platforms//os:macos": ["3rdparty/endian/endian.h"],
+        "//conditions:default": [],
+    }),
     hdrs = glob(["include/ur_client_library/**/*.h"]),
-    includes = ["include"],
+    includes = ["include"] + select({
+        "@platforms//os:macos": ["3rdparty/endian"],
+        "//conditions:default": [],
+    }),
     data = glob(["resources/**"]),
-    linkopts = ["-lpthread"]
+    linkopts = ["-lpthread"],
 )
