@@ -1,41 +1,79 @@
 load(
-    "@drake//tools/workspace/lcm:lcm.bzl",
-    "lcm_cc_library",
-    "lcm_java_library",
-    "lcm_py_library",
+    "@drake//tools/skylark:java.bzl",
+    "java_binary",
 )
 load(
-    "@drake//tools/skylark:drake_java.bzl",
-    "drake_java_binary",
+    "@lcm//lcm-bazel:lcm_cc_library_srcs.bzl",
+    "lcm_cc_library_srcs",
 )
-load("@drake//tools/lint:lint.bzl", "add_lint_tests")
+load(
+    "@lcm//lcm-bazel:lcm_java_library_srcs.bzl",
+    "lcm_java_library_srcs",
+)
+load(
+    "@lcm//lcm-bazel:lcm_library.bzl",
+    "lcm_library",
+)
+load(
+    "@lcm//lcm-bazel:lcm_py_library_srcs.bzl",
+    "lcm_py_library_srcs",
+)
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_java//java:java_library.bzl", "java_library")
+load("@rules_python//python:defs.bzl", "py_library")
+
+ALL_LCM_SRCS = glob(["*.lcm"])
 
 package(default_visibility = ["//visibility:public"])
 
-#Lcm libraries
+lcm_library(
+    name = "messages",
+    srcs = ALL_LCM_SRCS,
+    lcm_package = "drake_ur_driver",
+    visibility = ["//visibility:public"],
+)
 
-#Lcm libraries
-lcm_cc_library(
+# C++
+lcm_cc_library_srcs(
+    name = "messages_cc_srcs",
+    src = ":messages",
+)
+
+cc_library(
     name = "lcmt_ur",
-    lcm_package = "drake_ur_driver",
-    lcm_srcs = glob(["*.lcm"]),
+    srcs = [":messages_cc_srcs"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["@lcm//lcm:lcm-coretypes"],
 )
 
-lcm_java_library(
+# Java
+lcm_java_library_srcs(
+    name = "messages_java_srcs",
+    src = ":messages",
+)
+
+java_library(
     name = "lcmtypes_ur_java",
-    lcm_package = "drake_ur_driver",
-    lcm_srcs = glob(["*.lcm"]),
+    srcs = [":messages_java_srcs"],
+    visibility = ["//visibility:public"],
+    deps = ["@lcm//lcm-java"],
 )
 
-lcm_py_library(
+# Python
+lcm_py_library_srcs(
+    name = "messages_py_srcs",
+    src = ":messages",
+)
+
+py_library(
     name = "lcmtypes_ur_py",
-    add_current_package_to_imports = True,  # Use //:module_py instead.
-    extra_srcs = ["__init__.py"],
-    lcm_package = "drake_ur_driver",
-    lcm_srcs = glob(["*.lcm"]),
+    srcs = [":messages_py_srcs"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
 )
 
-drake_java_binary(
+java_binary(
     name = "drake-ur-lcm-spy",
     main_class = "lcm.spy.Spy",
     visibility = ["//visibility:private"],

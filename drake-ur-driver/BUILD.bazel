@@ -11,7 +11,7 @@ cc_binary(
         "@drake//multibody/plant",
         "@drake//multibody/parsing:parsing",
         "@gflags",
-        "@lcm",
+        "@lcm//lcm:lcm-shared",
         "@liburclient",
     ],
     data = [
