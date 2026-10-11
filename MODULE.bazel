@@ -11,7 +11,7 @@ bazel_dep(name = "apple_support", version = "1.17.1", repo_name = "build_bazel_a
 
 # Add the Bazel rules we need.
 bazel_dep(name = "rules_cc", version = "0.1.1")
-bazel_dep(name = "rules_python", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "1.2.0")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 
 drake_dep_repositories = use_extension(

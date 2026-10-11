@@ -23,7 +23,7 @@ using drake::multibody::parsing::LoadModelDirectives;
 
 DEFINE_string(robot_ip_address, "192.168.56.101",
               "Address of the shop floor interface");
-DEFINE_string(lcm_url, "", "LCM URL for UR driver");
+DEFINE_string(lcm_url, "udpm://239.255.76.67:7667?ttl=0", "LCM URL for UR driver");
 DEFINE_string(lcm_command_channel, "UR_ROBOT_COMMAND",
               "Channel to listen for lcmt_ur_command messages on");
 DEFINE_string(lcm_status_channel, "UR_ROBOT_STATUS",
